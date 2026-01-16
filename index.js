@@ -81,19 +81,23 @@ async function init(router) {
 
             // Index by character for fast lookups
             if (character_id) {
-                const charBranches = await storage.getItem(`char:${character_id}`) || [];
+                let charBranches = await storage.getItem(`char:${character_id}`) || [];
                 if (!charBranches.includes(uuid)) {
                     charBranches.push(uuid);
-                    await storage.setItem(`char:${character_id}`, charBranches);
                 }
+                // Deduplicate to prevent issues
+                charBranches = [...new Set(charBranches)];
+                await storage.setItem(`char:${character_id}`, charBranches);
             }
 
             // Index by root for fast tree queries
-            const rootBranches = await storage.getItem(`root:${root_uuid}`) || [];
+            let rootBranches = await storage.getItem(`root:${root_uuid}`) || [];
             if (!rootBranches.includes(uuid)) {
                 rootBranches.push(uuid);
-                await storage.setItem(`root:${root_uuid}`, rootBranches);
             }
+            // Deduplicate to prevent issues
+            rootBranches = [...new Set(rootBranches)];
+            await storage.setItem(`root:${root_uuid}`, rootBranches);
 
             res.json({ success: true });
         } catch (error) {
@@ -108,8 +112,11 @@ async function init(router) {
             const { characterId } = req.params;
 
             // Get all branch UUIDs for this character
-            const branchUuids = await storage.getItem(`char:${characterId}`) || [];
-            
+            let branchUuids = await storage.getItem(`char:${characterId}`) || [];
+
+            // Deduplicate UUIDs to prevent duplicate branches
+            branchUuids = [...new Set(branchUuids)];
+
             // Fetch all branches
             const branches = [];
             for (const uuid of branchUuids) {
@@ -541,8 +548,11 @@ async function deleteRecursive(uuid, branch) {
  */
 async function deleteCharacterData(characterId) {
     // Get all branch UUIDs for this character
-    const branchUuids = await storage.getItem(`char:${characterId}`) || [];
-    
+    let branchUuids = await storage.getItem(`char:${characterId}`) || [];
+
+    // Deduplicate UUIDs
+    branchUuids = [...new Set(branchUuids)];
+
     if (branchUuids.length === 0) {
         console.log('[Chat Branches] No branches found for character:', characterId);
         return 0;
