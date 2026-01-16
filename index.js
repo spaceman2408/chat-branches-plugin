@@ -60,10 +60,17 @@ async function init(router) {
             const { uuid, parent_uuid, root_uuid, character_id, chat_name, branch_point, created_at } = req.body;
 
             if (!uuid || !root_uuid) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Missing required fields: uuid, root_uuid' 
+                return res.status(400).json({
+                    success: false,
+                    error: 'Missing required fields: uuid, root_uuid'
                 });
+            }
+
+            // Check if branch already exists to prevent duplicates
+            const existingBranch = await storage.getItem(`branch:${uuid}`);
+            if (existingBranch) {
+                console.log('[Chat Branches] Branch already exists, skipping registration:', uuid);
+                return res.json({ success: true, message: 'Branch already exists' });
             }
 
             const branch = {
@@ -85,7 +92,7 @@ async function init(router) {
                 if (!charBranches.includes(uuid)) {
                     charBranches.push(uuid);
                 }
-                // Deduplicate to prevent issues
+                // Deduplicate to prevent issues (ensure no duplicates even in race conditions)
                 charBranches = [...new Set(charBranches)];
                 await storage.setItem(`char:${character_id}`, charBranches);
             }
@@ -95,7 +102,7 @@ async function init(router) {
             if (!rootBranches.includes(uuid)) {
                 rootBranches.push(uuid);
             }
-            // Deduplicate to prevent issues
+            // Deduplicate to prevent issues (ensure no duplicates even in race conditions)
             rootBranches = [...new Set(rootBranches)];
             await storage.setItem(`root:${root_uuid}`, rootBranches);
 
@@ -357,6 +364,51 @@ async function init(router) {
             res.json({ success: true, branches });
         } catch (error) {
             console.error('[Chat Branches] Error fetching branches:', error);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    });
+
+    // Route: Clean duplicates from storage
+    router.post('/clean-duplicates', async (req, res) => {
+        try {
+            console.log('[Chat Branches] Starting duplicate cleanup...');
+
+            const keys = await storage.keys();
+            const charKeys = keys.filter(k => k.startsWith('char:'));
+            const rootKeys = keys.filter(k => k.startsWith('root:'));
+
+            let totalDuplicatesRemoved = 0;
+
+            // Clean character indices
+            for (const key of charKeys) {
+                const original = await storage.getItem(key) || [];
+                const deduplicated = [...new Set(original)];
+                if (deduplicated.length !== original.length) {
+                    const removed = original.length - deduplicated.length;
+                    totalDuplicatesRemoved += removed;
+                    console.log(`[Chat Branches] Cleaned ${removed} duplicates from ${key}`);
+                    await storage.setItem(key, deduplicated);
+                }
+            }
+
+            // Clean root indices
+            for (const key of rootKeys) {
+                const original = await storage.getItem(key) || [];
+                const deduplicated = [...new Set(original)];
+                if (deduplicated.length !== original.length) {
+                    const removed = original.length - deduplicated.length;
+                    totalDuplicatesRemoved += removed;
+                    console.log(`[Chat Branches] Cleaned ${removed} duplicates from ${key}`);
+                    await storage.setItem(key, deduplicated);
+                }
+            }
+
+            res.json({
+                success: true,
+                message: `Cleaned ${totalDuplicatesRemoved} duplicate entries from storage`
+            });
+        } catch (error) {
+            console.error('[Chat Branches] Error cleaning duplicates:', error);
             res.status(500).json({ success: false, error: error.message });
         }
     });
