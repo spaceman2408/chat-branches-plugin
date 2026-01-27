@@ -73,12 +73,15 @@ async function init(router) {
                 return res.json({ success: true, message: 'Branch already exists' });
             }
 
+            // Ensure chat_name doesn't have .jsonl extension (we store clean names)
+            const cleanChatName = chat_name ? String(chat_name).replace(/\.jsonl$/i, '') : null;
+
             const branch = {
                 uuid,
                 parent_uuid: parent_uuid || null,
                 root_uuid,
                 character_id: character_id || null,
-                chat_name: chat_name || null,
+                chat_name: cleanChatName,
                 branch_point: branch_point || null,
                 created_at: created_at || Date.now()
             };
@@ -258,7 +261,7 @@ async function init(router) {
     router.patch('/branch/:uuid', async (req, res) => {
         try {
             const { uuid } = req.params;
-            const { chat_name, character_id } = req.body;
+            const { chat_name, character_id, parent_uuid, root_uuid } = req.body;
 
             const branch = await storage.getItem(`branch:${uuid}`);
             if (!branch) {
@@ -272,7 +275,9 @@ async function init(router) {
             let updated = false;
 
             if (chat_name !== undefined) {
-                branch.chat_name = chat_name;
+                // Ensure chat_name doesn't have .jsonl extension (we store clean names)
+                const cleanChatName = String(chat_name).replace(/\.jsonl$/i, '');
+                branch.chat_name = cleanChatName;
                 updated = true;
             }
 
@@ -295,6 +300,47 @@ async function init(router) {
                 updated = true;
             }
 
+            // Preserve parent_uuid if provided (prevents structure corruption)
+            if (parent_uuid !== undefined && parent_uuid !== branch.parent_uuid) {
+                // If moving between roots, update root indices
+                if (branch.root_uuid !== root_uuid) {
+                    // Remove from old root index
+                    const oldRootBranches = await storage.getItem(`root:${branch.root_uuid}`) || [];
+                    const filtered = oldRootBranches.filter(id => id !== uuid);
+                    await storage.setItem(`root:${branch.root_uuid}`, filtered);
+                    
+                    // Add to new root index
+                    const newRootBranches = await storage.getItem(`root:${root_uuid}`) || [];
+                    if (!newRootBranches.includes(uuid)) {
+                        newRootBranches.push(uuid);
+                        await storage.setItem(`root:${root_uuid}`, newRootBranches);
+                    }
+                }
+                
+                branch.parent_uuid = parent_uuid;
+                updated = true;
+            }
+
+            // Preserve root_uuid if provided (prevents structure corruption)
+            if (root_uuid !== undefined && root_uuid !== branch.root_uuid) {
+                // If root is changing, update root indices
+                if (branch.root_uuid) {
+                    const oldRootBranches = await storage.getItem(`root:${branch.root_uuid}`) || [];
+                    const filtered = oldRootBranches.filter(id => id !== uuid);
+                    await storage.setItem(`root:${branch.root_uuid}`, filtered);
+                }
+                
+                // Add to new root index
+                const newRootBranches = await storage.getItem(`root:${root_uuid}`) || [];
+                if (!newRootBranches.includes(uuid)) {
+                    newRootBranches.push(uuid);
+                    await storage.setItem(`root:${root_uuid}`, newRootBranches);
+                }
+                
+                branch.root_uuid = root_uuid;
+                updated = true;
+            }
+
             if (!updated) {
                 return res.status(400).json({
                     success: false,
@@ -304,7 +350,10 @@ async function init(router) {
 
             await storage.setItem(`branch:${uuid}`, branch);
 
-            res.json({ success: true });
+            res.json({
+                success: true,
+                branch: branch
+            });
         } catch (error) {
             console.error('[Chat Branches Plugin] Error updating branch:', error);
             res.status(500).json({ success: false, error: error.message });
@@ -430,13 +479,9 @@ async function init(router) {
             const { uuid } = req.params;
             const { character_name } = req.body;
 
-            console.log('[Chat Branches] Loading messages for UUID:', uuid);
-            console.log('[Chat Branches] Character name from request:', character_name);
-
             // Get branch info to find the chat name
             const branch = await storage.getItem(`branch:${uuid}`);
             if (!branch) {
-                console.log('[Chat Branches] Branch not found for UUID:', uuid);
                 return res.status(404).json({
                     success: false,
                     error: 'Branch not found'
@@ -444,7 +489,6 @@ async function init(router) {
             }
 
             if (!branch.chat_name) {
-                console.log('[Chat Branches] Branch has no chat_name:', uuid);
                 return res.status(404).json({
                     success: false,
                     error: 'Branch has no chat_name associated'
@@ -453,10 +497,10 @@ async function init(router) {
 
             // Construct the path to the chat file
             // SillyTavern stores chats in: /chats/{character_name}/{chat_name}.jsonl
-            const chatFileName = branch.chat_name.endsWith('.jsonl') ? branch.chat_name : branch.chat_name + '.jsonl';
+            // Ensure we don't double-add .jsonl extension
+            const cleanChatName = String(branch.chat_name).replace(/\.jsonl$/i, '');
+            const chatFileName = `${cleanChatName}.jsonl`;
             const chatFilePath = path.join(process.cwd(), 'chats', character_name || branch.character_id || '', chatFileName);
-
-            console.log('[Chat Branches] Reading chat file:', chatFilePath);
 
             // Read the file
             const fileContent = await fs.readFile(chatFilePath, 'utf8');
@@ -475,12 +519,10 @@ async function init(router) {
                 }
             }
 
-            console.log(`[Chat Branches] Loaded ${messages.length} messages from ${chatFileName}`);
-
             res.json({
                 success: true,
                 messages: messages,
-                chat_name: branch.chat_name
+                chat_name: cleanChatName
             });
         } catch (error) {
             console.error('[Chat Branches] Error loading chat messages:', error);
